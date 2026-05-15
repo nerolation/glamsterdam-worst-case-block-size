@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Worst-case block size — EIP-7976 + EIP-7928</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --border: #262a33;
+    --text: #e6e8ec;
+    --muted: #8b93a7;
+    --accent: #6aa9ff;
+    --accent-2: #9b7cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { margin: 0 0 4px 0; font-size: 20px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px 0; font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px;
+  }
+  .panel h2 { margin: 0 0 14px 0; font-size: 14px; color: var(--muted);
+              text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .field input {
+    width: 100%; padding: 8px 10px; border-radius: 6px;
+    background: #0c0e13; color: var(--text);
+    border: 1px solid var(--border); font: inherit; font-variant-numeric: tabular-nums;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+  .summary {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    margin-bottom: 18px;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px;
+  }
+  .stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat .val { font-size: 22px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .stat .sub { font-size: 12px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+  th:first-child, td:first-child { text-align: left; }
+
+  .chart-wrap { position: relative; height: 320px; }
+  .formula {
+    margin-top: 14px; padding: 10px 12px; background: #0c0e13; border-radius: 6px;
+    border: 1px solid var(--border); color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+</style>
+</head>
+<body>
+
+<h1>Worst-case block size — EIP-7976 + EIP-7928</h1>
+<p class="subtitle">Single tx fills the block: floor-binding non-zero calldata + max cold SLOADs to one account.</p>
+
+<div class="layout">
+  <div class="panel">
+    <h2>Parameters</h2>
+
+    <div class="field">
+      <label>SLOAD cost (gas)</label>
+      <input type="number" id="sload_cost" value="2100" min="1">
+    </div>
+    <div class="field">
+      <label>Cold account access cost (gas)</label>
+      <input type="number" id="account_access_cost" value="2600" min="0">
+    </div>
+    <div class="field">
+      <label>Tx base cost (gas)</label>
+      <input type="number" id="tx_base_cost" value="21000" min="0">
+    </div>
+    <div class="field">
+      <label>Calldata floor cost per byte (gas)</label>
+      <input type="number" id="floor_cost" value="64" min="1">
+    </div>
+    <div class="field">
+      <label>Standard non-zero byte cost (gas)</label>
+      <input type="number" id="standard_nonzero_cost" value="16" min="1">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>BAL account bytes</label>
+        <input type="number" id="bal_account_bytes" value="20" min="0">
+      </div>
+      <div class="field">
+        <label>BAL slot bytes</label>
+        <input type="number" id="bal_slot_bytes" value="32" min="0">
+      </div>
+    </div>
+
+    <h2 style="margin-top:18px;">Gas limit sweep</h2>
+    <div class="row">
+      <div class="field">
+        <label>Min (gas)</label>
+        <input type="number" id="gas_min" value="100000000" min="1000000" step="1000000">
+      </div>
+      <div class="field">
+        <label>Max (gas)</label>
+        <input type="number" id="gas_max" value="300000000" min="1000000" step="1000000">
+      </div>
+    </div>
+    <div class="field">
+      <label>Step (gas)</label>
+      <input type="number" id="gas_step" value="10000000" min="1000000" step="1000000">
+    </div>
+  </div>
+
+  <div>
+    <div class="summary">
+      <div class="stat">
+        <div class="lbl">At max gas limit</div>
+        <div class="val" id="stat-total">—</div>
+        <div class="sub" id="stat-total-sub">—</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">Calldata bytes</div>
+        <div class="val" id="stat-calldata">—</div>
+        <div class="sub" id="stat-calldata-sub">non-zero, non-compressible</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">BAL bytes</div>
+        <div class="val" id="stat-bal">—</div>
+        <div class="sub" id="stat-bal-sub">account + SLOAD slots</div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 18px;">
+      <h2>Worst-case compressed block size</h2>
+      <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      <div class="formula" id="formula"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Sweep table</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Gas limit</th>
+            <th>Calldata bytes</th>
+            <th># SLOADs</th>
+            <th>BAL bytes</th>
+            <th>Total bytes</th>
+            <th>MiB</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmt = new Intl.NumberFormat('en-US');
+const fmt3 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3, minimumFractionDigits: 3 });
+
+function compute(L, p) {
+  const usable = L - p.tx_base_cost;
+  if (usable <= 0) return null;
+  const calldata_bytes = Math.floor(usable / p.floor_cost);
+  const headroom_per_byte = p.floor_cost - p.standard_nonzero_cost;
+  const execution_gas = headroom_per_byte * calldata_bytes;
+  const sload_gas = execution_gas - p.account_access_cost;
+  const num_sloads = Math.max(0, Math.floor(sload_gas / p.sload_cost));
+  const bal_bytes = p.bal_account_bytes + p.bal_slot_bytes * num_sloads;
+  const total_bytes = calldata_bytes + bal_bytes;
+  return { L, calldata_bytes, num_sloads, bal_bytes, total_bytes };
+}
+
+function readParams() {
+  const id = (s) => Number(document.getElementById(s).value);
+  return {
+    sload_cost: id('sload_cost'),
+    account_access_cost: id('account_access_cost'),
+    tx_base_cost: id('tx_base_cost'),
+    floor_cost: id('floor_cost'),
+    standard_nonzero_cost: id('standard_nonzero_cost'),
+    bal_account_bytes: id('bal_account_bytes'),
+    bal_slot_bytes: id('bal_slot_bytes'),
+  };
+}
+
+let chart;
+function refresh() {
+  const p = readParams();
+  const gas_min = Number(document.getElementById('gas_min').value);
+  const gas_max = Number(document.getElementById('gas_max').value);
+  const gas_step = Number(document.getElementById('gas_step').value);
+
+  if (!(gas_max > gas_min) || !(gas_step > 0)) return;
+
+  const rows = [];
+  for (let L = gas_min; L <= gas_max; L += gas_step) {
+    const r = compute(L, p);
+    if (r) rows.push(r);
+  }
+
+  // Table
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${fmt.format(r.L)}</td>
+      <td>${fmt.format(r.calldata_bytes)}</td>
+      <td>${fmt.format(r.num_sloads)}</td>
+      <td>${fmt.format(r.bal_bytes)}</td>
+      <td>${fmt.format(r.total_bytes)}</td>
+      <td>${fmt3.format(r.total_bytes / 1024 / 1024)}</td>
+    </tr>
+  `).join('');
+
+  // Summary stats: at max gas limit
+  const last = rows[rows.length - 1];
+  if (last) {
+    document.getElementById('stat-total').textContent = fmt3.format(last.total_bytes / 1024 / 1024) + ' MiB';
+    document.getElementById('stat-total-sub').textContent = fmt.format(last.total_bytes) + ' bytes @ ' + fmt.format(last.L) + ' gas';
+    document.getElementById('stat-calldata').textContent = fmt3.format(last.calldata_bytes / 1024 / 1024) + ' MiB';
+    document.getElementById('stat-calldata-sub').textContent = fmt.format(last.calldata_bytes) + ' bytes';
+    document.getElementById('stat-bal').textContent = fmt3.format(last.bal_bytes / 1024 / 1024) + ' MiB';
+    document.getElementById('stat-bal-sub').textContent = fmt.format(last.num_sloads) + ' SLOADs';
+  }
+
+  // Formula display
+  document.getElementById('formula').textContent =
+    `N = (L − ${p.tx_base_cost}) / ${p.floor_cost}` +
+    `   |   headroom/byte = ${p.floor_cost - p.standard_nonzero_cost} gas` +
+    `   |   S = (${p.floor_cost - p.standard_nonzero_cost}·N − ${p.account_access_cost}) / ${p.sload_cost}` +
+    `   |   total = N + ${p.bal_account_bytes} + ${p.bal_slot_bytes}·S`;
+
+  // Chart
+  const labels = rows.map(r => (r.L / 1_000_000) + 'M');
+  const calldata_mib = rows.map(r => r.calldata_bytes / 1024 / 1024);
+  const bal_mib = rows.map(r => r.bal_bytes / 1024 / 1024);
+  const total_mib = rows.map(r => r.total_bytes / 1024 / 1024);
+  // Pre-EIP-7623 / pre-EIP-7976 world (no BAL, EIP-7623 floor 10/40 zero/non-zero,
+  // worst-case split: 30% gas for zero bytes, 70% for non-zero bytes).
+  const pre7976_mib = rows.map(r => (r.L * 0.3 / 10 + r.L * 0.7 / 40) / 1024 / 1024);
+  // Historical reference lines (constant value across the sweep).
+  const pre_pectra_mib  = rows.map(_ => 3.3);
+  const post_fusaka_mib = rows.map(_ => 2.2);
+
+  const data = {
+    labels,
+    datasets: [
+      { label: 'Calldata', data: calldata_mib, backgroundColor: 'rgba(106,169,255,0.7)', borderColor: 'rgba(106,169,255,1)', stack: 's', type: 'bar' },
+      { label: 'BAL',      data: bal_mib,      backgroundColor: 'rgba(155,124,255,0.7)', borderColor: 'rgba(155,124,255,1)', stack: 's', type: 'bar' },
+      { label: 'Total (line)', data: total_mib, type: 'line', borderColor: '#e6e8ec', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 3, tension: 0.2 },
+      { label: 'Pre-7976 / pre-7928', data: pre7976_mib, type: 'line', borderColor: '#ff5b6e', backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], pointRadius: 3, tension: 0.2 },
+      { label: 'Pre-Pectra (36M, 3.3 MiB)',  data: pre_pectra_mib,  type: 'line', borderColor: '#f4b942', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [3, 3], pointRadius: 0, tension: 0 },
+      { label: 'Post-Fusaka (60M, 2.2 MiB)', data: post_fusaka_mib, type: 'line', borderColor: '#4ade80', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [3, 3], pointRadius: 0, tension: 0 },
+    ]
+  };
+  const opts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { title: { display: true, text: 'Block gas limit', color: '#8b93a7' }, ticks: { color: '#8b93a7' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+      y: { title: { display: true, text: 'Worst-case block size (MiB)', color: '#8b93a7' }, ticks: { color: '#8b93a7' }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true }
+    },
+    plugins: {
+      legend: { labels: { color: '#e6e8ec' } },
+      tooltip: { callbacks: { label: (ctx) => ctx.dataset.label + ': ' + fmt3.format(ctx.parsed.y) + ' MiB' } }
+    }
+  };
+
+  if (chart) {
+    chart.data = data;
+    chart.options = opts;
+    chart.update();
+  } else {
+    chart = new Chart(document.getElementById('chart'), { data, options: opts });
+  }
+}
+
+document.querySelectorAll('input').forEach(el => el.addEventListener('input', refresh));
+refresh();
+</script>
+
+</body>
+</html>
