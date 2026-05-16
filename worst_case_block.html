@@ -65,6 +65,13 @@
     border: 1px solid var(--border); color: var(--muted); font-size: 12px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
+  .fit-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px; font-size: 12px; color: var(--muted);
+  }
+  .fit-toggle label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .fit-toggle input { accent-color: var(--accent); }
+  .fit-toggle .mode { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -144,6 +151,28 @@
       </div>
     </div>
 
+    <div class="fit-toggle">
+      <span>Propagation time at max gas limit — fit mode: <span class="mode" id="fit-mode-label">empirical (realistic)</span></span>
+      <label><input type="checkbox" id="fit_conservative"> Use conservative fit</label>
+    </div>
+    <div class="summary">
+      <div class="stat">
+        <div class="lbl">Propagation p50</div>
+        <div class="val" id="stat-p50">—</div>
+        <div class="sub" id="stat-p50-sub">—</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">Propagation p75</div>
+        <div class="val" id="stat-p75">—</div>
+        <div class="sub" id="stat-p75-sub">—</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">Propagation p90</div>
+        <div class="val" id="stat-p90">—</div>
+        <div class="sub" id="stat-p90-sub">—</div>
+      </div>
+    </div>
+
     <div class="panel" style="margin-bottom: 18px;">
       <h2>Worst-case compressed block size</h2>
       <div class="chart-wrap"><canvas id="chart"></canvas></div>
@@ -172,6 +201,28 @@
 <script>
 const fmt = new Intl.NumberFormat('en-US');
 const fmt3 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3, minimumFractionDigits: 3 });
+const fmt0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
+// Propagation-time fits, ms as a function of size_kb.
+const FITS = {
+  empirical: {
+    label: 'empirical (realistic)',
+    p50: (kb) => 0.200 * kb + 221,
+    p75: (kb) => 0.394 * kb + 332,
+    p90: (kb) => 0.443 * kb + 569,
+  },
+  conservative: {
+    label: 'conservative',
+    p50: (kb) => 0.433 * kb + 148,
+    p75: (kb) => 0.693 * kb + 239,
+    p90: (kb) => 1.061 * kb + 355,
+  },
+};
+
+function formatMs(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s';
+  return fmt0.format(ms) + ' ms';
+}
 
 function compute(L, p) {
   const usable = L - p.tx_base_cost;
@@ -236,6 +287,18 @@ function refresh() {
     document.getElementById('stat-calldata-sub').textContent = fmt.format(last.calldata_bytes) + ' bytes';
     document.getElementById('stat-bal').textContent = fmt3.format(last.bal_bytes / 1024 / 1024) + ' MiB';
     document.getElementById('stat-bal-sub').textContent = fmt.format(last.num_sloads) + ' SLOADs';
+
+    // Propagation time at max gas limit (selected fit).
+    const useConservative = document.getElementById('fit_conservative').checked;
+    const fit = useConservative ? FITS.conservative : FITS.empirical;
+    document.getElementById('fit-mode-label').textContent = fit.label;
+    const size_kb = last.total_bytes / 1024;
+    for (const pct of ['p50', 'p75', 'p90']) {
+      const ms = fit[pct](size_kb);
+      document.getElementById('stat-' + pct).textContent = formatMs(ms);
+      document.getElementById('stat-' + pct + '-sub').textContent =
+        fmt0.format(ms) + ' ms @ ' + fmt0.format(size_kb) + ' KB';
+    }
   }
 
   // Formula display
