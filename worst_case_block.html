@@ -227,14 +227,44 @@ function formatMs(ms) {
 function compute(L, p) {
   const usable = L - p.tx_base_cost;
   if (usable <= 0) return null;
-  const calldata_bytes = Math.floor(usable / p.floor_cost);
-  const headroom_per_byte = p.floor_cost - p.standard_nonzero_cost;
-  const execution_gas = headroom_per_byte * calldata_bytes;
-  const sload_gas = execution_gas - p.account_access_cost;
-  const num_sloads = Math.max(0, Math.floor(sload_gas / p.sload_cost));
-  const bal_bytes = p.bal_account_bytes + p.bal_slot_bytes * num_sloads;
-  const total_bytes = calldata_bytes + bal_bytes;
-  return { L, calldata_bytes, num_sloads, bal_bytes, total_bytes };
+
+  const candidates = [];
+
+  // Strategy A: Floor-binding (calldata at floor + free SLOADs from headroom)
+  // Valid only when standard < floor (otherwise headroom is non-positive).
+  if (p.standard_nonzero_cost < p.floor_cost) {
+    const N = Math.floor(usable / p.floor_cost);
+    const headroom_per_byte = p.floor_cost - p.standard_nonzero_cost;
+    const execution_gas = headroom_per_byte * N;
+    const sload_gas = execution_gas - p.account_access_cost;
+    const num_sloads = Math.max(0, Math.floor(sload_gas / p.sload_cost));
+    const bal_bytes = num_sloads > 0 ? p.bal_account_bytes + p.bal_slot_bytes * num_sloads : 0;
+    candidates.push({
+      strategy: 'floor-binding',
+      calldata_bytes: N, num_sloads, bal_bytes,
+      total_bytes: N + bal_bytes,
+    });
+  }
+
+  // Strategy B: SLOAD-only (all gas into BAL, no calldata)
+  {
+    const sload_gas = usable - p.account_access_cost;
+    if (sload_gas > 0) {
+      const num_sloads = Math.floor(sload_gas / p.sload_cost);
+      const bal_bytes = p.bal_account_bytes + p.bal_slot_bytes * num_sloads;
+      candidates.push({
+        strategy: 'SLOAD-only',
+        calldata_bytes: 0, num_sloads, bal_bytes,
+        total_bytes: bal_bytes,
+      });
+    }
+  }
+
+  // (We deliberately ignore the case standard >= floor: it isn't realistic.)
+
+  // Take the max
+  const best = candidates.reduce((a, b) => a.total_bytes >= b.total_bytes ? a : b);
+  return { L, ...best };
 }
 
 function readParams() {
@@ -282,7 +312,8 @@ function refresh() {
   const last = rows[rows.length - 1];
   if (last) {
     document.getElementById('stat-total').textContent = fmt3.format(last.total_bytes / 1024 / 1024) + ' MiB';
-    document.getElementById('stat-total-sub').textContent = fmt.format(last.total_bytes) + ' bytes @ ' + fmt.format(last.L) + ' gas';
+    document.getElementById('stat-total-sub').textContent =
+      fmt.format(last.total_bytes) + ' bytes @ ' + fmt.format(last.L) + ' gas · strategy: ' + last.strategy;
     document.getElementById('stat-calldata').textContent = fmt3.format(last.calldata_bytes / 1024 / 1024) + ' MiB';
     document.getElementById('stat-calldata-sub').textContent = fmt.format(last.calldata_bytes) + ' bytes';
     document.getElementById('stat-bal').textContent = fmt3.format(last.bal_bytes / 1024 / 1024) + ' MiB';
@@ -301,12 +332,24 @@ function refresh() {
     }
   }
 
-  // Formula display
-  document.getElementById('formula').textContent =
-    `N = (L − ${p.tx_base_cost}) / ${p.floor_cost}` +
-    `   |   headroom/byte = ${p.floor_cost - p.standard_nonzero_cost} gas` +
-    `   |   S = (${p.floor_cost - p.standard_nonzero_cost}·N − ${p.account_access_cost}) / ${p.sload_cost}` +
-    `   |   total = N + ${p.bal_account_bytes} + ${p.bal_slot_bytes}·S`;
+  // Formula display — depends on which strategy won at the max gas limit
+  const strat = last ? last.strategy : 'floor-binding';
+  const crossover = 32 * p.standard_nonzero_cost;
+  let formula;
+  if (strat === 'floor-binding') {
+    formula =
+      `[floor-binding]   N = (L − ${p.tx_base_cost}) / ${p.floor_cost}` +
+      `   |   headroom/byte = ${p.floor_cost - p.standard_nonzero_cost} gas` +
+      `   |   S = (${p.floor_cost - p.standard_nonzero_cost}·N − ${p.account_access_cost}) / ${p.sload_cost}` +
+      `   |   total = N + ${p.bal_account_bytes} + ${p.bal_slot_bytes}·S` +
+      `   ·   crossover at sload_cost ≤ 32·standard = ${crossover}`;
+  } else {
+    formula =
+      `[SLOAD-only]   S = (L − ${p.tx_base_cost} − ${p.account_access_cost}) / ${p.sload_cost}` +
+      `   |   total = ${p.bal_account_bytes} + ${p.bal_slot_bytes}·S` +
+      `   ·   SLOAD now cheaper per byte: ${(p.sload_cost/p.bal_slot_bytes).toFixed(2)} gas/byte vs ${p.floor_cost} at the floor`;
+  }
+  document.getElementById('formula').textContent = formula;
 
   // Chart
   const labels = rows.map(r => (r.L / 1_000_000) + 'M');
